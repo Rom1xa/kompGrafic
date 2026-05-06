@@ -6,19 +6,34 @@
 inline void bresenhamLine(Canvas &c, int x0, int y0, int x1, int y1,
                           char ch = '*') {
   int dx = std::abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
-  int dy = -std::abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
-  int err = dx + dy;
-  for (;;) {
-    c.setPixel(x0, y0, ch);
-    if (x0 == x1 && y0 == y1)
-      break;
-    int e2 = 2 * err;
-    if (e2 >= dy) {
-      err += dy;
+  int dy = std::abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+
+  if (dx >= dy) {
+    int p = 2 * dy - dx;
+    for (int i = 0; i <= dx; ++i) {
+      c.setPixel(x0, y0, ch);
+      if (i == dx)
+        break;
+      if (p >= 0) {
+        y0 += sy;
+        p += 2 * dy - 2 * dx;
+      } else {
+        p += 2 * dy;
+      }
       x0 += sx;
     }
-    if (e2 <= dx) {
-      err += dx;
+  } else {
+    int p = 2 * dx - dy;
+    for (int i = 0; i <= dy; ++i) {
+      c.setPixel(x0, y0, ch);
+      if (i == dy)
+        break;
+      if (p >= 0) {
+        x0 += sx;
+        p += 2 * dx - 2 * dy;
+      } else {
+        p += 2 * dx;
+      }
       y0 += sy;
     }
   }

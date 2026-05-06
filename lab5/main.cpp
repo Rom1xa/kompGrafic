@@ -118,7 +118,7 @@ static void drawArraysVNT(const float *data, int vertexCount) {
 
 struct Image {
   int w = 0, h = 0;
-  std::vector<unsigned char> rgba; 
+  std::vector<unsigned char> rgba;
 };
 
 static bool loadBMP24(const char *path, Image &out) {
@@ -140,7 +140,7 @@ static bool loadBMP24(const char *path, Image &out) {
                   ((uint32_t)hdr[32] << 16) | ((uint32_t)hdr[33] << 24);
   if (bpp != 24 || comp != 0 || w <= 0 || h == 0)
     return false;
-  bool flipped = (h < 0); 
+  bool flipped = (h < 0);
   if (flipped)
     h = -h;
   f.seekg(dataOffset, std::ios::beg);
@@ -206,8 +206,7 @@ static void makeDieFaceTexture(int faceIndex, int size, Image &out) {
   };
   for (int y = 0; y < size; ++y)
     for (int x = 0; x < size; ++x)
-      putPixel(out, x, y, bg[faceIndex][0], bg[faceIndex][1],
-               bg[faceIndex][2]);
+      putPixel(out, x, y, bg[faceIndex][0], bg[faceIndex][1], bg[faceIndex][2]);
   int b = size / 18;
   for (int y = 0; y < size; ++y)
     for (int x = 0; x < size; ++x) {
@@ -298,8 +297,8 @@ static void makeDieFaceTexture(int faceIndex, int size, Image &out) {
     break;
   }
   for (int i = 0; i < count; ++i) {
-    fillCircle(out, pts[i][0], pts[i][1], rad + 2, 30, 30, 35); 
-    fillCircle(out, pts[i][0], pts[i][1], rad, 245, 245, 245); 
+    fillCircle(out, pts[i][0], pts[i][1], rad + 2, 30, 30, 35);
+    fillCircle(out, pts[i][0], pts[i][1], rad, 245, 245, 245);
   }
 }
 
@@ -309,7 +308,8 @@ static GLuint uploadTexture(const Image &img) {
   glBindTexture(GL_TEXTURE_2D, id);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                  GL_LINEAR_MIPMAP_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   gluBuild2DMipmaps(GL_TEXTURE_2D, GL_RGBA, img.w, img.h, GL_RGBA,
                     GL_UNSIGNED_BYTE, img.rgba.data());
@@ -503,7 +503,8 @@ static void reshape(int w, int h) {
 }
 
 static void printHelp() {
-  printf("Если файлы текстур не найдены — используется процедурная текстура (грань кубика).\n");
+  printf("Если файлы текстур не найдены — используется процедурная текстура "
+         "(грань кубика).\n");
   printf("Управление:\n");
   printf("  X          : вкл/выкл текстуры\n");
   printf("  L          : вкл/выкл освещение\n");

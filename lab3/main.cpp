@@ -7,11 +7,11 @@ const float PI = 3.14159265f;
 const int FLOATS_PER_VERTEX = 6;
 
 static float g_lightAngle = 0.f;
-static float g_lightSpeed = 1.0f; 
+static float g_lightSpeed = 1.0f;
 static float g_lightHeight = 0.9f;
 static float g_lightRadius = 2.5f;
 
-static float g_explode = 0.f; 
+static float g_explode = 0.f;
 static float g_explodeMax = 0.9f;
 static bool g_autoExplode = true;
 static float g_autoT = 0.f;
@@ -174,7 +174,7 @@ static void display() {
   float lx = g_lightRadius * cosf(g_lightAngle);
   float ly = g_lightHeight;
   float lz = g_lightRadius * sinf(g_lightAngle);
-  GLfloat lightPos[4] = {lx, ly, lz, 1.f}; 
+  GLfloat lightPos[4] = {lx, ly, lz, 1.f};
   glLightfv(GL_LIGHT0, GL_POSITION, lightPos);
 
   glEnable(GL_LIGHTING);
@@ -337,13 +337,13 @@ static void mouse(int button, int state, int x, int y) {
     g_mouseDown = (state == GLUT_DOWN);
     g_mouseX = x;
     g_mouseY = y;
-  } else if (button == 3) { 
+  } else if (button == 3) {
     if (state == GLUT_DOWN) {
       g_camDist -= 0.3f;
       if (g_camDist < 1.5f)
         g_camDist = 1.5f;
     }
-  } else if (button == 4) { 
+  } else if (button == 4) {
     if (state == GLUT_DOWN) {
       g_camDist += 0.3f;
       if (g_camDist > 20.f)
