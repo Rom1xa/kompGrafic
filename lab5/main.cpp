@@ -1,9 +1,10 @@
 #include <GL/freeglut.h>
-#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
+#include <unistd.h>
 #include <vector>
 
 const float PI = 3.14159265f;
@@ -121,185 +122,212 @@ struct Image {
   std::vector<unsigned char> rgba;
 };
 
-static bool loadBMP24(const char *path, Image &out) {
-  std::ifstream f(path, std::ios::binary);
-  if (!f.is_open())
-    return false;
-  unsigned char hdr[54];
-  f.read((char *)hdr, 54);
-  if (!f || hdr[0] != 'B' || hdr[1] != 'M')
-    return false;
-  uint32_t dataOffset = (uint32_t)hdr[10] | ((uint32_t)hdr[11] << 8) |
-                        ((uint32_t)hdr[12] << 16) | ((uint32_t)hdr[13] << 24);
-  int32_t w = (int32_t)((uint32_t)hdr[18] | ((uint32_t)hdr[19] << 8) |
-                        ((uint32_t)hdr[20] << 16) | ((uint32_t)hdr[21] << 24));
-  int32_t h = (int32_t)((uint32_t)hdr[22] | ((uint32_t)hdr[23] << 8) |
-                        ((uint32_t)hdr[24] << 16) | ((uint32_t)hdr[25] << 24));
-  uint16_t bpp = (uint16_t)((uint32_t)hdr[28] | ((uint32_t)hdr[29] << 8));
-  uint32_t comp = (uint32_t)hdr[30] | ((uint32_t)hdr[31] << 8) |
-                  ((uint32_t)hdr[32] << 16) | ((uint32_t)hdr[33] << 24);
-  if (bpp != 24 || comp != 0 || w <= 0 || h == 0)
-    return false;
-  bool flipped = (h < 0);
-  if (flipped)
-    h = -h;
-  f.seekg(dataOffset, std::ios::beg);
-  int rowSize = ((24 * w + 31) / 32) * 4;
-  std::vector<unsigned char> raw((size_t)rowSize * (size_t)h);
-  f.read((char *)raw.data(), (std::streamsize)raw.size());
-  if (!f)
-    return false;
+static uint32_t readU32LE(const unsigned char *p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+         ((uint32_t)p[3] << 24);
+}
+
+static uint16_t readU16LE(const unsigned char *p) {
+  return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static void paletteBGRToRGBA(unsigned char idx, const unsigned char *palette,
+                             int palEntries, unsigned char *rgbaOut) {
+  size_t pi = (size_t)idx * 4u;
+  if ((int)idx >= palEntries)
+    pi = 0;
+  rgbaOut[0] = palette[pi + 2];
+  rgbaOut[1] = palette[pi + 1];
+  rgbaOut[2] = palette[pi + 0];
+  rgbaOut[3] = 255;
+}
+
+static bool decodeRLE8(const unsigned char *src, size_t srcLen, int w, int h,
+                       bool topDown, const unsigned char *palette,
+                       int palEntries, Image &out) {
   out.w = w;
   out.h = h;
-  out.rgba.assign((size_t)w * (size_t)h * 4u, 255);
-  for (int y = 0; y < h; ++y) {
-    int srcRow = flipped ? (h - 1 - y) : y;
-    const unsigned char *row = &raw[(size_t)srcRow * (size_t)rowSize];
-    unsigned char *dst = &out.rgba[(size_t)y * (size_t)w * 4u];
-    for (int x = 0; x < w; ++x) {
-      unsigned char b = row[x * 3 + 0];
-      unsigned char g = row[x * 3 + 1];
-      unsigned char r = row[x * 3 + 2];
-      dst[x * 4 + 0] = r;
-      dst[x * 4 + 1] = g;
-      dst[x * 4 + 2] = b;
-      dst[x * 4 + 3] = 255;
+  out.rgba.assign((size_t)w * (size_t)h * 4u, 0);
+  auto putIdx = [&](int x, int bmpScanline, unsigned char idx) {
+    if (x < 0 || x >= w || bmpScanline < 0 || bmpScanline >= h)
+      return;
+    int imgY = topDown ? bmpScanline : (h - 1 - bmpScanline);
+    paletteBGRToRGBA(idx, palette, palEntries,
+                     &out.rgba[(size_t)imgY * (size_t)w * 4u + (size_t)x * 4u]);
+  };
+
+  size_t pos = 0;
+  int x = 0, bmpScanline = 0;
+  while (pos + 2 <= srcLen && bmpScanline < h) {
+    unsigned char n = src[pos++];
+    unsigned char v = src[pos++];
+    if (n > 0) {
+      for (int i = 0; i < (int)n; ++i) {
+        putIdx(x, bmpScanline, v);
+        x++;
+      }
+    } else if (v == 0) {
+      x = 0;
+      bmpScanline++;
+    } else if (v == 1) {
+      break;
+    } else if (v == 2) {
+      if (pos + 2 > srcLen)
+        return false;
+      x += src[pos++];
+      bmpScanline += src[pos++];
+    } else {
+      int count = (int)v;
+      for (int i = 0; i < count; ++i) {
+        if (pos >= srcLen)
+          return false;
+        putIdx(x, bmpScanline, src[pos++]);
+        x++;
+      }
+      if (count & 1)
+        pos++;
     }
   }
   return true;
 }
 
-static void putPixel(Image &img, int x, int y, unsigned char r, unsigned char g,
-                     unsigned char b) {
-  if (x < 0 || y < 0 || x >= img.w || y >= img.h)
-    return;
-  size_t i = ((size_t)y * (size_t)img.w + (size_t)x) * 4u;
-  img.rgba[i + 0] = r;
-  img.rgba[i + 1] = g;
-  img.rgba[i + 2] = b;
-  img.rgba[i + 3] = 255;
+static bool loadBMP(const char *path, Image &out) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f.is_open())
+    return false;
+
+  unsigned char fh[14];
+  f.read((char *)fh, 14);
+  if (!f || fh[0] != 'B' || fh[1] != 'M')
+    return false;
+  uint32_t bfOffBits = readU32LE(fh + 10);
+
+  f.seekg(14, std::ios::beg);
+  uint32_t dibSize = 0;
+  f.read((char *)&dibSize, 4);
+  if (!f || dibSize < 40u || dibSize > 256u * 1024u)
+    return false;
+
+  std::vector<unsigned char> dib(dibSize);
+  memcpy(dib.data(), &dibSize, 4);
+  f.read((char *)dib.data() + 4, (std::streamsize)dibSize - 4);
+  if (!f)
+    return false;
+
+  int32_t w = (int32_t)readU32LE(dib.data() + 4);
+  int32_t rawH = (int32_t)readU32LE(dib.data() + 8);
+  uint16_t planes = readU16LE(dib.data() + 12);
+  uint16_t bpp = readU16LE(dib.data() + 14);
+  uint32_t compression = readU32LE(dib.data() + 16);
+  uint32_t clrUsed = readU32LE(dib.data() + 32);
+
+  if (planes != 1 || w <= 0 || rawH == 0)
+    return false;
+
+  bool topDown = rawH < 0;
+  int h = topDown ? -rawH : rawH;
+
+  int palEntries = 0;
+  if (bpp <= 8u) {
+    palEntries = (int)clrUsed;
+    if (palEntries <= 0)
+      palEntries = 1 << bpp;
+    if (palEntries > 256)
+      palEntries = 256;
+  }
+
+  std::vector<unsigned char> palette;
+  if (bpp <= 8u) {
+    palette.assign((size_t)palEntries * 4u, 0);
+    std::streamoff palStart = (std::streamoff)(14 + dibSize);
+    std::streamoff pixStart = (std::streamoff)bfOffBits;
+    if (pixStart > palStart) {
+      size_t maxRead = (size_t)(pixStart - palStart);
+      size_t want = (size_t)palEntries * 4u;
+      size_t nread = want < maxRead ? want : maxRead;
+      f.seekg(palStart);
+      f.read((char *)palette.data(), (std::streamsize)nread);
+    }
+  }
+
+  f.seekg(0, std::ios::end);
+  std::streamoff fileEnd = f.tellg();
+  if (fileEnd < (std::streamoff)bfOffBits)
+    return false;
+  size_t pixLen = (size_t)(fileEnd - (std::streamoff)bfOffBits);
+  std::vector<unsigned char> pix(pixLen);
+  f.seekg((std::streamoff)bfOffBits, std::ios::beg);
+  f.read((char *)pix.data(), (std::streamsize)pixLen);
+  if (!f && pixLen > 0)
+    return false;
+
+  out.w = w;
+  out.h = h;
+  out.rgba.assign((size_t)w * (size_t)h * 4u, 255);
+
+  if (bpp == 24u && compression == 0u) {
+    int rowSize = ((24 * w + 31) / 32) * 4;
+    if (pix.size() < (size_t)rowSize * (size_t)h)
+      return false;
+    for (int y = 0; y < h; ++y) {
+      int srcRow = topDown ? y : (h - 1 - y);
+      const unsigned char *row = &pix[(size_t)srcRow * (size_t)rowSize];
+      unsigned char *dst = &out.rgba[(size_t)y * (size_t)w * 4u];
+      for (int x = 0; x < w; ++x) {
+        dst[x * 4 + 0] = row[x * 3 + 2];
+        dst[x * 4 + 1] = row[x * 3 + 1];
+        dst[x * 4 + 2] = row[x * 3 + 0];
+        dst[x * 4 + 3] = 255;
+      }
+    }
+    return true;
+  }
+
+  if (bpp == 32u && (compression == 0u || compression == 3u)) {
+    int rowSize = w * 4;
+    if (pix.size() < (size_t)rowSize * (size_t)h)
+      return false;
+    for (int y = 0; y < h; ++y) {
+      int srcRow = topDown ? y : (h - 1 - y);
+      const unsigned char *row = &pix[(size_t)srcRow * (size_t)rowSize];
+      unsigned char *dst = &out.rgba[(size_t)y * (size_t)w * 4u];
+      for (int x = 0; x < w; ++x) {
+        dst[x * 4 + 0] = row[x * 4 + 2];
+        dst[x * 4 + 1] = row[x * 4 + 1];
+        dst[x * 4 + 2] = row[x * 4 + 0];
+        unsigned char a = row[x * 4 + 3];
+        dst[x * 4 + 3] = a ? a : 255;
+      }
+    }
+    return true;
+  }
+
+  if (bpp == 8u && compression == 0u) {
+    int rowSize = ((8 * w + 31) / 32) * 4;
+    if (pix.size() < (size_t)rowSize * (size_t)h)
+      return false;
+    for (int y = 0; y < h; ++y) {
+      int srcRow = topDown ? y : (h - 1 - y);
+      const unsigned char *row = &pix[(size_t)srcRow * (size_t)rowSize];
+      unsigned char *dst = &out.rgba[(size_t)y * (size_t)w * 4u];
+      for (int x = 0; x < w; ++x)
+        paletteBGRToRGBA(row[x], palette.data(), palEntries, dst + x * 4);
+    }
+    return true;
+  }
+
+  if (bpp == 8u && compression == 1u)
+    return decodeRLE8(pix.data(), pix.size(), w, h, topDown, palette.data(),
+                      palEntries, out);
+
+  return false;
 }
 
-static void fillCircle(Image &img, int cx, int cy, int rad, unsigned char r,
-                       unsigned char g, unsigned char b) {
-  int r2 = rad * rad;
-  for (int y = std::max(0, cy - rad); y <= std::min(img.h - 1, cy + rad); ++y)
-    for (int x = std::max(0, cx - rad); x <= std::min(img.w - 1, cx + rad);
-         ++x) {
-      int dx = x - cx, dy = y - cy;
-      if (dx * dx + dy * dy <= r2)
-        putPixel(img, x, y, r, g, b);
-    }
-}
-
-static void makeDieFaceTexture(int faceIndex, int size, Image &out) {
-  out.w = size;
-  out.h = size;
-  out.rgba.assign((size_t)size * (size_t)size * 4u, 255);
-  unsigned char bg[6][3] = {
-      {235, 90, 90},   // 1 - красный
-      {90, 200, 100},  // 2 - зелёный
-      {90, 130, 230},  // 3 - синий
-      {235, 200, 80},  // 4 - жёлтый
-      {220, 100, 200}, // 5 - сиреневый
-      {90, 215, 215},  // 6 - бирюзовый
-  };
-  for (int y = 0; y < size; ++y)
-    for (int x = 0; x < size; ++x)
-      putPixel(out, x, y, bg[faceIndex][0], bg[faceIndex][1], bg[faceIndex][2]);
-  int b = size / 18;
-  for (int y = 0; y < size; ++y)
-    for (int x = 0; x < size; ++x) {
-      if (x < b || x >= size - b || y < b || y >= size - b)
-        putPixel(out, x, y, 30, 30, 35);
-    }
-  int n = faceIndex + 1;
-  int q = size / 4;
-  int c = size / 2;
-  int rad = size / 14;
-  int pts[6][2];
-  int count = 0;
-  switch (n) {
-  case 1:
-    pts[count][0] = c;
-    pts[count][1] = c;
-    ++count;
-    break;
-  case 2:
-    pts[count][0] = q;
-    pts[count][1] = q;
-    ++count;
-    pts[count][0] = 3 * q;
-    pts[count][1] = 3 * q;
-    ++count;
-    break;
-  case 3:
-    pts[count][0] = q;
-    pts[count][1] = q;
-    ++count;
-    pts[count][0] = c;
-    pts[count][1] = c;
-    ++count;
-    pts[count][0] = 3 * q;
-    pts[count][1] = 3 * q;
-    ++count;
-    break;
-  case 4:
-    pts[count][0] = q;
-    pts[count][1] = q;
-    ++count;
-    pts[count][0] = 3 * q;
-    pts[count][1] = q;
-    ++count;
-    pts[count][0] = q;
-    pts[count][1] = 3 * q;
-    ++count;
-    pts[count][0] = 3 * q;
-    pts[count][1] = 3 * q;
-    ++count;
-    break;
-  case 5:
-    pts[count][0] = q;
-    pts[count][1] = q;
-    ++count;
-    pts[count][0] = 3 * q;
-    pts[count][1] = q;
-    ++count;
-    pts[count][0] = c;
-    pts[count][1] = c;
-    ++count;
-    pts[count][0] = q;
-    pts[count][1] = 3 * q;
-    ++count;
-    pts[count][0] = 3 * q;
-    pts[count][1] = 3 * q;
-    ++count;
-    break;
-  case 6:
-    pts[count][0] = q;
-    pts[count][1] = q;
-    ++count;
-    pts[count][0] = 3 * q;
-    pts[count][1] = q;
-    ++count;
-    pts[count][0] = q;
-    pts[count][1] = c;
-    ++count;
-    pts[count][0] = 3 * q;
-    pts[count][1] = c;
-    ++count;
-    pts[count][0] = q;
-    pts[count][1] = 3 * q;
-    ++count;
-    pts[count][0] = 3 * q;
-    pts[count][1] = 3 * q;
-    ++count;
-    break;
-  }
-  for (int i = 0; i < count; ++i) {
-    fillCircle(out, pts[i][0], pts[i][1], rad + 2, 30, 30, 35);
-    fillCircle(out, pts[i][0], pts[i][1], rad, 245, 245, 245);
-  }
+static Image makeFallbackTexture() {
+  Image img;
+  img.w = img.h = 1;
+  img.rgba = {200, 60, 200, 255};
+  return img;
 }
 
 static GLuint uploadTexture(const Image &img) {
@@ -316,19 +344,80 @@ static GLuint uploadTexture(const Image &img) {
   return id;
 }
 
-static void loadAllTextures() {
+static void textureExecutableDir(char *out, size_t outSz, char **argv) {
+  out[0] = '\0';
+#ifdef __linux__
+  if (outSz == 0)
+    return;
+  ssize_t n = readlink("/proc/self/exe", out, outSz - 1);
+  if (n > 0) {
+    out[n] = '\0';
+    char *slash = strrchr(out, '/');
+    if (slash)
+      *slash = '\0';
+    else
+      std::snprintf(out, outSz, ".");
+    return;
+  }
+#endif
+  if (argv && argv[0] && argv[0][0]) {
+    std::snprintf(out, outSz, "%s", argv[0]);
+    char *slash = strrchr(out, '/');
+    if (slash && slash != out)
+      *slash = '\0';
+    else
+      std::snprintf(out, outSz, ".");
+    return;
+  }
+  std::snprintf(out, outSz, ".");
+}
+
+static void loadAllTextures(char **argv) {
+  char exeDir[512];
+  textureExecutableDir(exeDir, sizeof(exeDir), argv);
+
+  static const char *rel[] = {"textures", "lab5/textures"};
   for (int i = 0; i < 6; ++i) {
-    char path[64];
-    std::snprintf(path, sizeof(path), "textures/%d.bmp", i + 1);
     Image img;
-    if (loadBMP24(path, img)) {
-      printf("[tex] face %d: загружен %s (%dx%d)\n", i + 1, path, img.w, img.h);
-    } else {
-      makeDieFaceTexture(i, 256, img);
-      printf("[tex] face %d: процедурная (нет файла %s)\n", i + 1, path);
+    char path[768];
+    bool ok = false;
+    const char *roots[] = {exeDir, "."};
+    for (size_t ri = 0; ri < sizeof(roots) / sizeof(roots[0]); ++ri) {
+      if (ri > 0 && strcmp(roots[ri], roots[ri - 1]) == 0)
+        continue;
+      for (const char *sub : rel) {
+        std::snprintf(path, sizeof(path), "%s/%s/%d.bmp", roots[ri], sub,
+                      i + 1);
+        if (loadBMP(path, img)) {
+          ok = true;
+          printf("[tex] грань %d: %s (%dx%d)\n", i + 1, path, img.w, img.h);
+          break;
+        }
+      }
+      if (ok)
+        break;
+    }
+    if (!ok) {
+      fprintf(
+          stderr,
+          "[tex] ошибка: грань %d — нет файла рядом с программой (%s/textures/"
+          "%d.bmp) или в текущей папке (textures/, lab5/textures/). "
+          "Форматы: 24/32 bpp RGB, 8 bpp RGB или RLE.\n",
+          i + 1, exeDir, i + 1);
+      img = makeFallbackTexture();
     }
     g_textures[i] = uploadTexture(img);
   }
+}
+
+static GLUquadric *sunQuadric() {
+  static GLUquadric *q = nullptr;
+  if (!q) {
+    q = gluNewQuadric();
+    gluQuadricNormals(q, GLU_SMOOTH);
+    gluQuadricTexture(q, GL_FALSE);
+  }
+  return q;
 }
 
 static void drawCubeEdges(float explode) {
@@ -349,15 +438,20 @@ static void drawCubeEdges(float explode) {
     glEnable(GL_LIGHTING);
 }
 
+static void drawLightBulbSphere(float lx, float ly, float lz) {
+  glPushMatrix();
+  glTranslatef(lx, ly, lz);
+  glColor3f(1.0f, 0.95f, 0.55f);
+  gluSphere(sunQuadric(), 0.07, 28, 18);
+  glPopMatrix();
+}
+
 static void drawLightSource(float lx, float ly, float lz) {
   bool wasLit = glIsEnabled(GL_LIGHTING);
   glDisable(GL_LIGHTING);
   glDisable(GL_TEXTURE_2D);
-  glPushMatrix();
-  glTranslatef(lx, ly, lz);
-  glColor3f(1.0f, 0.95f, 0.55f);
-  glutSolidSphere(0.07, 20, 20);
-  glPopMatrix();
+  glDisable(GL_BLEND);
+  drawLightBulbSphere(lx, ly, lz);
   glColor3f(0.4f, 0.4f, 0.25f);
   glBegin(GL_LINES);
   glVertex3f(0.f, 0.f, 0.f);
@@ -445,7 +539,22 @@ static void display() {
   std::vector<float> verts;
   buildCubeVertexArray(verts, g_explode);
 
+  float vlx = lx - cx, vly = ly - cy, vlz = lz - cz;
+  float distLightSq = vlx * vlx + vly * vly + vlz * vlz;
+  float distCubeCenterSq = g_camDist * g_camDist;
+  bool sunBehindCube = distLightSq > distCubeCenterSq;
+
   if (g_transparent) {
+    if (sunBehindCube) {
+      glDisable(GL_LIGHTING);
+      glDisable(GL_TEXTURE_2D);
+      drawLightBulbSphere(lx, ly, lz);
+      if (g_lightingOn) {
+        glEnable(GL_LIGHTING);
+        glEnable(GL_LIGHT0);
+      }
+    }
+
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
@@ -459,13 +568,31 @@ static void display() {
 
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
+
+    glDisable(GL_TEXTURE_2D);
+    drawCubeEdges(g_explode);
+
+    if (sunBehindCube) {
+      glDisable(GL_LIGHTING);
+      glDisable(GL_TEXTURE_2D);
+      glColor3f(0.4f, 0.4f, 0.25f);
+      glBegin(GL_LINES);
+      glVertex3f(0.f, 0.f, 0.f);
+      glVertex3f(lx, ly, lz);
+      glEnd();
+      if (g_lightingOn) {
+        glEnable(GL_LIGHTING);
+        glEnable(GL_LIGHT0);
+      }
+    } else {
+      drawLightSource(lx, ly, lz);
+    }
   } else {
     drawCubeAllFaces(verts.data());
+    glDisable(GL_TEXTURE_2D);
+    drawCubeEdges(g_explode);
+    drawLightSource(lx, ly, lz);
   }
-
-  glDisable(GL_TEXTURE_2D);
-  drawCubeEdges(g_explode);
-  drawLightSource(lx, ly, lz);
 
   glutSwapBuffers();
 }
@@ -503,8 +630,10 @@ static void reshape(int w, int h) {
 }
 
 static void printHelp() {
-  printf("Если файлы текстур не найдены — используется процедурная текстура "
-         "(грань кубика).\n");
+  printf(
+      "Текстуры: каталог textures/ рядом с исполняемым файлом или в текущей "
+      "директории (ещё lab5/textures/). Форматы BMP: 24/32 bpp, 8 bpp RGB/RLE. "
+      "При ошибке — заглушка 1×1.\n");
   printf("Управление:\n");
   printf("  X          : вкл/выкл текстуры\n");
   printf("  L          : вкл/выкл освещение\n");
@@ -693,7 +822,7 @@ int main(int argc, char **argv) {
   setupLighting();
   glEnable(GL_LIGHT0);
   setupMaterial();
-  loadAllTextures();
+  loadAllTextures(argv);
 
   glutDisplayFunc(display);
   glutReshapeFunc(reshape);

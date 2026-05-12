@@ -115,13 +115,17 @@ static void drawCubeEdges(float explode) {
   glEnable(GL_LIGHTING);
 }
 
-static void drawLightSource(float lx, float ly, float lz) {
-  glDisable(GL_LIGHTING);
+static void drawLightBulbSphere(float lx, float ly, float lz) {
   glPushMatrix();
   glTranslatef(lx, ly, lz);
   glColor3f(1.0f, 0.95f, 0.55f);
   glutSolidSphere(0.07, 20, 20);
   glPopMatrix();
+}
+
+static void drawLightSource(float lx, float ly, float lz) {
+  glDisable(GL_LIGHTING);
+  drawLightBulbSphere(lx, ly, lz);
   glColor3f(0.4f, 0.4f, 0.25f);
   glBegin(GL_LINES);
   glVertex3f(0.f, 0.f, 0.f);
@@ -180,17 +184,27 @@ static void display() {
   GLfloat lightPos[4] = {lx, ly, lz, 1.f};
   glLightfv(GL_LIGHT0, GL_POSITION, lightPos);
 
-  glEnable(GL_LIGHTING);
-
   std::vector<float> verts;
   buildCubeVertexArray(verts, g_explode);
   int vertexCount = (int)(verts.size() / FLOATS_PER_VERTEX);
 
+  float vlx = lx - cx, vly = ly - cy, vlz = lz - cz;
+  float distLightSq = vlx * vlx + vly * vly + vlz * vlz;
+  float distCubeCenterSq = g_camDist * g_camDist;
+  bool sunBehindCube = distLightSq > distCubeCenterSq;
+
+  glEnable(GL_LIGHTING);
+
   if (g_transparent) {
+    if (sunBehindCube) {
+      glDisable(GL_LIGHTING);
+      drawLightBulbSphere(lx, ly, lz);
+      glEnable(GL_LIGHTING);
+    }
+
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
-
     glColor4f(0.55f, 0.70f, 0.90f, g_alpha);
 
     glEnable(GL_CULL_FACE);
@@ -202,14 +216,26 @@ static void display() {
 
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
+
+    drawCubeEdges(g_explode);
+
+    if (sunBehindCube) {
+      glDisable(GL_LIGHTING);
+      glColor3f(0.4f, 0.4f, 0.25f);
+      glBegin(GL_LINES);
+      glVertex3f(0.f, 0.f, 0.f);
+      glVertex3f(lx, ly, lz);
+      glEnd();
+      glEnable(GL_LIGHTING);
+    } else {
+      drawLightSource(lx, ly, lz);
+    }
   } else {
     glColor3f(0.55f, 0.70f, 0.90f);
     drawArraysVN(verts.data(), vertexCount);
+    drawCubeEdges(g_explode);
+    drawLightSource(lx, ly, lz);
   }
-
-  drawCubeEdges(g_explode);
-
-  drawLightSource(lx, ly, lz);
 
   glutSwapBuffers();
 }
